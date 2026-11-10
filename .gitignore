@@ -11,3 +11,5 @@
 .cxx/
 *.apk
 *.aab
+# the published download (tools/publish-android.ps1)
+!downloads/android/workout.apk

@@ -1,0 +1,179 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>body{margin:0}iframe{border:0;width:390px;height:844px}#out{white-space:pre;font:12px monospace}</style></head>
+<body>
+<iframe id="f"></iframe>
+<div id="out"></div>
+<script>
+const params = new URLSearchParams(location.search);
+const stopAt = params.get('stop'); // screenshot mode
+const out = [];
+const log = (m) => out.push(m);
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+localStorage.clear();
+const f = document.getElementById('f');
+if (stopAt) { document.getElementById('out').style.display = 'none'; }
+f.src = 'index.html';
+f.onload = async () => {
+  const w = f.contentWindow, d = w.document;
+  const errors = [];
+  w.addEventListener('error', e => errors.push(e.message));
+  const q = s => d.querySelector(s);
+  const click = (s) => { const el = typeof s === 'string' ? q(s) : s; if (!el) throw new Error('missing ' + s); el.click(); };
+  const data = () => JSON.parse(w.localStorage.getItem('workout-data-v1'));
+  const check = (c, m) => log((c ? 'PASS ' : 'FAIL ') + m);
+  try {
+    await sleep(100);
+    check(!!q('[data-a=createPpl]'), 'start screen shows setup');
+    if (stopAt === 'empty') return done();
+    click('[data-a=hideHint]');
+    click('[data-a=createPpl]');
+    check(d.querySelectorAll('[data-a=dayMenu]').length === 6, 'PPL plan has 6 days in editor');
+    // add template exercise to Push 1
+    click(d.querySelectorAll('[data-a=tplAdd]')[0]);
+    q('#ex-name').value = 'Incline DB Press'; click('[data-a="m:add"]');
+    check(data().plans[0].days[0].exercises[0] === 'Incline DB Press', 'template exercise added');
+    if (stopAt === 'editor') return done();
+    click('[data-a=tab][data-t=workout]');
+    check(q('.hero-title').textContent === 'Push 1', 'next up is Push 1');
+    if (stopAt === 'start') return done();
+    click('.hero [data-a=start]');
+    check(data().current && data().current.exercises.length === 1, 'workout started with template exercise');
+    click('[data-a=addExercise]');
+    q('#ex-name').value = 'Bench Press'; click('[data-a="m:add"]');
+    // add set to Bench
+    const benchAdd = [...d.querySelectorAll('[data-a=addSet]')][1];
+    click(benchAdd);
+    q('#f-w').value = '60'; q('#f-r').value = '10'; q('#f-p').value = '2';
+    click('[data-a="m:addDrop"]');
+    check(q('.drop-w').value === '47.5', 'drop prefilled to 80% (47.5)');
+    q('.drop-r').value = '8';
+    click('[data-a="m:save"]');
+    let cur = data().current;
+    const bench = cur.exercises.find(e => e.name === 'Bench Press');
+    check(bench.sets.length === 1 && bench.sets[0].w === 60 && bench.sets[0].p === 2 && bench.sets[0].drops[0].r === 8, 'set saved with partials + drop');
+    click([...d.querySelectorAll('[data-a=repeatSet]')][0]);
+    check(data().current.exercises.find(e => e.name === 'Bench Press').sets.length === 2, 'repeat last works');
+    // stepper
+    click([...d.querySelectorAll('[data-a=addSet]')][1]);
+    check(q('#f-w').value === '60' && q('#f-r').value === '10', 'new set prefilled from previous');
+    click(d.querySelectorAll('[data-a=step][data-t=f-w]')[1]);
+    check(q('#f-w').value === '62.5', 'stepper +2.5');
+    if (stopAt === 'setdialog') return done();
+    click('[data-a="m:close"]');
+    if (stopAt === 'active') return done();
+    click('[data-a=finish]'); click('[data-a="m:ok"]');
+    let dd = data();
+    check(dd.current === null && dd.sessions.length === 1, 'workout finished and saved');
+    check(dd.sessions[0].exercises.length === 1, 'empty template exercise dropped from saved workout');
+    check(dd.plans[0].nextDayIndex === 1, 'rotation advanced to day 2');
+    check(dd.plans[0].days[0].exercises.includes('Bench Press'), 'Bench saved to Push 1 template');
+    check(q('.hero-title').textContent === 'Pull 1', 'next up is Pull 1');
+    // do a different day: Legs 2 (index 5) -> next should wrap to Push 1
+    click([...d.querySelectorAll('[data-a=start][data-day]')].filter(b => !b.closest('.hero'))[5]);
+    click('[data-a=addExercise]'); q('#ex-name').value = 'Squat'; click('[data-a="m:add"]');
+    click('[data-a=addSet]'); q('#f-w').value = '100'; q('#f-r').value = '5'; click('[data-a="m:save"]');
+    click('[data-a=finish]'); click('[data-a="m:ok"]');
+    check(data().plans[0].nextDayIndex === 0, 'after last day rotation wraps to day 1');
+    // last time shown
+    await sleep(30); click('.hero [data-a=start]');
+    check(d.body.textContent.includes('Last time: 60×10 +2p ↓47.5×8'), 'last time summary shown');
+    click('[data-a=discard]'); click('[data-a="m:ok"]');
+    check(data().current === null && data().plans[0].nextDayIndex === 0, 'discard keeps rotation');
+    // stats
+    click('[data-a=tab][data-t=stats]');
+    const tiles = [...d.querySelectorAll('.tile .v')].map(x => x.textContent);
+    check(tiles[0] === '2' && tiles[2] === '3' && tiles[3] === '25' && tiles[4] === '4' && tiles[5] === '2', 'week stats tiles: ' + tiles.join(','));
+    if (stopAt === 'stats') return done();
+    click('[data-a=statsMode][data-m=month]');
+    check(q('.tile .v').textContent === '2', 'month stats');
+    click('[data-a=statsPrev]');
+    check(q('.tile .v').textContent === '0', 'previous month empty');
+    // history
+    click('[data-a=tab][data-t=history]');
+    check(d.querySelectorAll('[data-a=openSession]').length === 2, 'history lists 2 workouts');
+    if (stopAt === 'history') return done();
+    click('[data-a=openSession]');
+    check(!!q('.topbar.has-back'), 'session detail opens');
+    // share format roundtrip
+    const plan = data().plans[0];
+    const shared = w.planShareJson(plan);
+    const back = w.parseSharedPlan(JSON.stringify(shared));
+    check(back && back.plan.days.length === 6 && back.plan.days[0].exercises.includes('Bench Press') && back.plan.id !== plan.id, 'shared plan roundtrip');
+    // Android-format shared plan (pretty JSON, same schema)
+    const android = '{\n  "type": "workout-plan",\n  "version": 1,\n  "name": "Bro Split",\n  "days": [{"name":"Chest","exercises":["Bench"]},{"name":"Back","exercises":[]}]\n}';
+    w.importPlanDialog(android); click('[data-a="m:ok"]');
+    check(data().plans.length === 2 && data().plans[1].name === 'Bro Split', 'import Android plan file');
+    w.importPlanDialog(JSON.stringify(shared)); click('[data-a="m:ok"]');
+    check(data().plans[2].name === 'Push Pull Legs (2)', 'duplicate name gets (2)');
+    w.importPlanDialog('{"foo":1}');
+    check(d.body.textContent.includes('Not a plan file'), 'rejects non-plan file');
+    click('[data-a="m:close"]');
+    // Android backup format (weights omitted when null, no "current")
+    const backup = {version:1, plans:[{id:'p1',name:'A',nextDayIndex:1,days:[{id:'d1',name:'X',exercises:['E']},{id:'d2',name:'Y',exercises:[]}]}], activePlanId:'p1',
+      sessions:[{id:'s1',planId:'p1',planName:'A',dayId:'d1',dayName:'X',startedAt:Date.now()-3600e3,finishedAt:Date.now(),exercises:[{id:'e1',name:'E',sets:[{id:'x',r:12,p:0,drops:[]}]}]}], weightUnit:'lb'};
+    const n = w.normalize(backup);
+    check(n.sessions[0].exercises[0].sets[0].w === null && n.weightUnit === 'lb' && n.current === null, 'Android backup normalizes');
+    // ---------- timed / cardio
+    w.eval('data = normalize({}); save(); render();');
+    click('[data-a=tab][data-t=workout]');
+    click('[data-a=createPpl]'); click('[data-a=tab][data-t=workout]');
+    click('.hero [data-a=start]');
+    click('[data-a=addExercise]');
+    q('#ex-name').value = 'Plank';
+    click('[data-a="m:kind"][data-k=t]');
+    check(q('#ex-save').checked === false, 'timed defaults to today-only');
+    click('[data-a="m:add"]');
+    let cx = data().current.exercises[0];
+    check(cx.kind === 'timed' && cx.name === 'Plank', 'plank added as timed');
+    check(data().plans[0].days[0].exercises.length === 0, 'plank NOT added to plan');
+    check(d.body.textContent.includes('today only') && d.body.textContent.includes('Add round'), 'card shows today only + Add round');
+    click('[data-a=addSet]');
+    check(!!q('#clock') && !!q('#f-timer'), 'timed dialog with stopwatch');
+    if (stopAt === 'timeddialog') { q('#f-min').value = '1'; q('#f-sec').value = '30'; q('#f-sec').dispatchEvent(new w.Event('input')); return done(); }
+    q('#f-min').value = '1'; q('#f-sec').value = '30';
+    click('[data-a="m:save"]');
+    cx = data().current.exercises[0];
+    check(cx.sets.length === 1 && cx.sets[0].t === 90, 'round saved as 90s');
+    check(d.body.textContent.includes('1:30'), 'round shows 1:30');
+    // timer runs
+    click('[data-a=addSet]'); click('[data-a="m:timer"]');
+    await sleep(2300);
+    check((parseInt(q('#f-sec').value) || 0) >= 2, 'stopwatch counts (' + q('#f-sec').value + 's)');
+    click('[data-a="m:cancel"]');
+    // treadmill with distance, added to plan
+    click('[data-a=addExercise]');
+    q('#ex-name').value = 'Treadmill'; click('[data-a="m:kind"][data-k=t]');
+    q('#ex-save').checked = true; click('[data-a="m:add"]');
+    check(data().plans[0].days[0].exercises.includes('Treadmill'), 'treadmill saved to plan when ticked');
+    click([...d.querySelectorAll('[data-a=addSet]')][1]);
+    q('#f-min').value = '20'; q('#f-dist').value = '3.2'; click('[data-a="m:save"]');
+    // plank later added to plan via menu
+    click('[data-a=exMenu]'); click('[data-a="m:pick"][data-i="0"]');
+    check(data().plans[0].days[0].exercises.includes('Plank'), 'plank added to plan via menu');
+    if (stopAt === 'timedactive') return done();
+    await sleep(30);
+    click('[data-a=finish]'); click('[data-a="m:ok"]');
+    click('[data-a=tab][data-t=stats]'); click('[data-a=statsMode][data-m=week]');
+    check(d.body.textContent.includes('Cardio / timed') && d.body.textContent.includes('21:30') && d.body.textContent.includes('3.2'), 'stats show cardio 21:30 + distance'); log('STATS: ' + [...d.querySelectorAll('.tile')].map(x => x.textContent.trim().replace(/\s+/g,' ')).join(' | ') + ' || sessions=' + data().sessions.length + ' current=' + !!data().current);
+    if (stopAt === 'timedstats') return done();
+    // next Push 1 starts with plank as timed
+    w.eval('data.plans[0].nextDayIndex = 0; save();'); await sleep(30);
+    click('[data-a=tab][data-t=workout]'); click('.hero [data-a=start]');
+    check(data().current.exercises.find(e => e.name === 'Plank').kind === 'timed', 'template plank starts as timed');
+    check(d.body.textContent.includes('Last time: 1:30'), 'timed last time shown');
+    click('[data-a=discard]'); click('[data-a="m:ok"]');
+    // share carries timed list; Android-style file with "timed" imports kinds
+    const sh = w.eval('planShareJson(data.plans[0])');
+    check(JSON.stringify(sh.timed) === JSON.stringify(['Plank', 'Treadmill']) || JSON.stringify(sh.timed) === JSON.stringify(['Treadmill', 'Plank']), 'share includes timed: ' + JSON.stringify(sh.timed));
+    w.importPlanDialog('{"type":"workout-plan","version":1,"name":"Core","days":[{"name":"Abs","exercises":["Side Plank","Crunch"]}],"timed":["Side Plank"]}');
+    click('[data-a="m:ok"]');
+    check(w.eval("isTimedName('side plank') && !isTimedName('crunch')"), 'imported timed kinds');
+    click('[data-a=tab][data-t=plans]');
+    if (stopAt === 'plans') return done();
+  } catch (e) { log('FAIL exception: ' + e.message + '\n' + e.stack); }
+  log('JS errors: ' + (errors.length ? errors.join(' | ') : 'none'));
+  done();
+};
+function done() { document.getElementById('out').textContent = out.join('\n'); document.title = 'DONE'; }
+</script>
+</body></html>

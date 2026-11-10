@@ -1,6 +1,8 @@
-# Publishes the pwa/ folder to GitHub Pages on every push to main.
+# Publishes the site to GitHub Pages on every push to main:
+#   /          -> pwa/                (installable web app)
+#   /android/  -> downloads/android/  (APK download page, built by tools/publish-android.ps1)
 # One-time setup: repo Settings -> Pages -> Source: "GitHub Actions".
-name: Deploy PWA to GitHub Pages
+name: Deploy site to GitHub Pages
 
 on:
   push:
@@ -24,9 +26,15 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          cp -r pwa/. _site/
+          mkdir -p _site/android
+          cp -r downloads/android/. _site/android/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: pwa
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@v4

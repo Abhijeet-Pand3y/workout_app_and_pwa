@@ -11,8 +11,9 @@ android {
         applicationId = "com.abhijeet.workout"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        // Bump both for every APK published to the download page (tools/publish-android.ps1 does this).
+        versionCode = 2
+        versionName = "1.1"
     }
 
     buildTypes {

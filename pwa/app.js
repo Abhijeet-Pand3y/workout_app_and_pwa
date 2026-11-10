@@ -411,7 +411,10 @@ function installHint() {
   if (isStandalone() || hidden) return '';
   const how = isIOS()
     ? 'In Safari tap <b>Share</b> (square with arrow) → <b>Add to Home Screen</b>. Then always open it from the home-screen icon: Safari and the installed app keep separate data.'
-    : 'Open the browser menu <b>⋮</b> → <b>Install app</b> / <b>Add to Home screen</b>.';
+    : 'Open the browser menu <b>⋮</b> → <b>Install app</b> / <b>Add to Home screen</b>.' +
+      (/android/i.test(navigator.userAgent)
+        ? '<br><br>Prefer a real Android app? <a href="android/" style="color:inherit;font-weight:700">Download the Android app</a>.'
+        : '');
   return `<section class="card hint col"><div class="row"><b class="grow">Install this app</b><button class="icon-btn sm" data-a="hideHint" aria-label="Hide">${icon('close')}</button></div><p class="small">${how}</p></section>`;
 }
 
