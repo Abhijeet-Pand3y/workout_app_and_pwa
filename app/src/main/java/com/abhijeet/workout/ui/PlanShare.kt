@@ -17,18 +17,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.abhijeet.workout.data.Plan
+import com.abhijeet.workout.data.SharedPlan
 import com.abhijeet.workout.data.parseSharedPlan
-import com.abhijeet.workout.data.toShareJson
 import java.io.File
 
 /** Opens the Android share sheet with the plan as a small .json file (no weights or history). */
-fun sharePlan(ctx: Context, plan: Plan) {
+fun sharePlan(ctx: Context, plan: Plan, json: String) {
     try {
         val dir = File(ctx.cacheDir, "shared").apply { mkdirs() }
         dir.listFiles()?.forEach { it.delete() }
         val safe = plan.name.replace(Regex("[^A-Za-z0-9 _-]"), "").trim().ifEmpty { "plan" }
         val file = File(dir, "$safe - workout plan.json")
-        file.writeText(plan.toShareJson().toString(2))
+        file.writeText(json)
         val uri = FileProvider.getUriForFile(ctx, ctx.packageName + ".files", file)
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "application/json"
@@ -44,9 +44,9 @@ fun sharePlan(ctx: Context, plan: Plan) {
 
 /** Confirms adding a received plan file. [text] is the raw file content. */
 @Composable
-fun ImportPlanDialog(text: String, onDismiss: () -> Unit, onImport: (Plan) -> Unit) {
-    val plan = remember(text) { parseSharedPlan(text) }
-    if (plan == null) {
+fun ImportPlanDialog(text: String, onDismiss: () -> Unit, onImport: (SharedPlan) -> Unit) {
+    val shared = remember(text) { parseSharedPlan(text) }
+    if (shared == null) {
         AlertDialog(
             onDismissRequest = onDismiss,
             title = { Text("Not a plan file") },
@@ -60,6 +60,7 @@ fun ImportPlanDialog(text: String, onDismiss: () -> Unit, onImport: (Plan) -> Un
         )
         return
     }
+    val plan = shared.plan
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Add plan \"${plan.name}\"?") },
@@ -77,7 +78,7 @@ fun ImportPlanDialog(text: String, onDismiss: () -> Unit, onImport: (Plan) -> Un
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { onImport(plan) }) { Text("Add plan") } },
+        confirmButton = { TextButton(onClick = { onImport(shared) }) { Text("Add plan") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

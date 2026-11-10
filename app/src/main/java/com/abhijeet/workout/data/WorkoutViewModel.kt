@@ -56,14 +56,28 @@ class WorkoutViewModel(app: Application) : AndroidViewModel(app) {
         createPlan("Push Pull Legs", listOf("Push 1", "Pull 1", "Legs 1", "Push 2", "Pull 2", "Legs 2"))
 
     /** Adds a plan received from someone else as a new plan. Returns its id. */
-    fun importPlan(plan: Plan): String {
+    fun importPlan(shared: SharedPlan): String {
+        val plan = shared.plan
         val taken = data.plans.map { it.name.lowercase() }.toSet()
         var name = plan.name
         var n = 2
         while (name.lowercase() in taken) name = "${plan.name} ($n)".also { n++ }
         val p = plan.copy(name = name)
-        update { it.copy(plans = it.plans + p, activePlanId = it.activePlanId ?: p.id) }
+        update {
+            it.copy(
+                plans = it.plans + p,
+                activePlanId = it.activePlanId ?: p.id,
+                timedExercises = it.timedExercises + shared.timed,
+            )
+        }
         return p.id
+    }
+
+    /** Remembers whether an exercise is timed (plank, cardio) or strength. */
+    fun setTimed(name: String, timed: Boolean) = update { d ->
+        val key = name.trim().lowercase()
+        if ((key in d.timedExercises) == timed) d
+        else d.copy(timedExercises = if (timed) d.timedExercises + key else d.timedExercises - key)
     }
 
     fun setActivePlan(id: String) = update { it.copy(activePlanId = id) }
@@ -135,7 +149,9 @@ class WorkoutViewModel(app: Application) : AndroidViewModel(app) {
                 dayId = day?.id,
                 dayName = day?.name ?: "Freestyle",
                 startedAt = System.currentTimeMillis(),
-                exercises = day?.exercises?.map { ExerciseLog(name = it) } ?: emptyList(),
+                exercises = day?.exercises?.map {
+                    ExerciseLog(name = it, kind = if (d.isTimed(it)) KIND_TIMED else KIND_STRENGTH)
+                } ?: emptyList(),
             )
         )
     }
@@ -188,6 +204,8 @@ class WorkoutViewModel(app: Application) : AndroidViewModel(app) {
     fun setUnit(unit: String) = update { it.copy(weightUnit = unit) }
 
     fun exportJson(): String = data.toJson().toString(2)
+
+    fun sharePlanJson(plan: Plan): String = plan.toShareJson(data.timedExercises).toString(2)
 
     fun importJson(text: String): Boolean = try {
         val parsed = parseAppData(JSONObject(text))

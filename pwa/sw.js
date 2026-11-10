@@ -1,5 +1,5 @@
 // Offline support: serve the app from cache, refresh the cache in the background.
-const CACHE = 'workout-v1';
+const CACHE = 'workout-v2';
 const FILES = [
   './',
   './index.html',

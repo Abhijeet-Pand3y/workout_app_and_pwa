@@ -64,8 +64,12 @@ fun HistoryScreen(vm: WorkoutViewModel, open: (String) -> Unit) {
                                 )
                                 Text(
                                     s.exercises.joinToString(" · ") { e ->
-                                        val best = e.sets.maxByOrNull { it.weight ?: 0.0 }
-                                        e.name + (best?.weight?.let { " ${fmtNum(it)}$unit" } ?: "")
+                                        if (e.isTimed) {
+                                            e.name + " " + fmtClock(e.sets.sumOf { it.seconds }.toLong())
+                                        } else {
+                                            val best = e.sets.maxByOrNull { it.weight ?: 0.0 }
+                                            e.name + (best?.weight?.let { " ${fmtNum(it)}$unit" } ?: "")
+                                        }
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     maxLines = 2,
@@ -121,7 +125,7 @@ fun StatsScreen(vm: WorkoutViewModel) {
             }
             item {
                 StatGrid(
-                    listOf(
+                    listOfNotNull(
                         "Workouts" to "${st.workouts}",
                         "Time trained" to fmtDuration(st.durationMs),
                         "Sets" to "${st.sets}",
@@ -129,7 +133,8 @@ fun StatsScreen(vm: WorkoutViewModel) {
                         "Partial reps" to "${st.partials}",
                         "Drop sets" to "${st.dropSets}",
                         "Volume ($unit)" to fmtVolume(st.volume),
-                        "Exercises" to "${st.byExercise.size}",
+                        "Cardio / timed" to fmtClock(st.timedSeconds),
+                        if (st.distance > 0) "Distance (${vm.data.distanceUnit})" to fmtNum(st.distance) else null,
                     )
                 )
             }
@@ -153,15 +158,24 @@ fun StatsScreen(vm: WorkoutViewModel) {
             }
             if (st.byExercise.isNotEmpty()) {
                 item { SectionHeader("Exercises") }
-                items(st.byExercise, key = { "ex-" + it.name.lowercase() }) { e ->
+                items(st.byExercise, key = { (if (it.timed) "t-" else "s-") + it.name.lowercase() }) { e ->
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(e.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-                                e.best?.let { Text("best ${fmtNum(it)} $unit", style = MaterialTheme.typography.labelLarge) }
+                                Text(if (e.timed) "⏱ ${e.name}" else e.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                                if (e.timed) {
+                                    Text("best ${fmtClock(e.bestSeconds.toLong())}", style = MaterialTheme.typography.labelLarge)
+                                } else {
+                                    e.best?.let { Text("best ${fmtNum(it)} $unit", style = MaterialTheme.typography.labelLarge) }
+                                }
                             }
                             Text(
-                                listOfNotNull(
+                                if (e.timed) listOfNotNull(
+                                    "${e.sets} rounds",
+                                    "${fmtClock(e.seconds)} total",
+                                    if (e.distance > 0) "${fmtNum(e.distance)} ${vm.data.distanceUnit}" else null,
+                                    if (e.sessions > 1) "${e.sessions} workouts" else null,
+                                ).joinToString(" · ") else listOfNotNull(
                                     "${e.sets} sets",
                                     "${e.reps} reps",
                                     if (e.partials > 0) "${e.partials} partials" else null,

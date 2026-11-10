@@ -14,16 +14,22 @@ const uid = () =>
   (self.crypto && crypto.randomUUID) ? crypto.randomUUID()
     : 'id-' + Date.now().toString(36) + Math.random().toString(36).slice(2);
 
-const emptyData = () => ({ version: 1, plans: [], activePlanId: null, sessions: [], current: null, weightUnit: 'kg' });
+const emptyData = () => ({ version: 1, plans: [], activePlanId: null, sessions: [], current: null, weightUnit: 'kg', timedExercises: [] });
+
+// Exercise kinds: 'strength' = weight × reps, 'timed' = duration (+ optional distance), e.g. plank or cardio.
+const TIMED = 'timed';
 
 function normSet(x) {
-  return {
+  const s = {
     id: x.id || uid(),
     w: x.w != null ? +x.w : null,
     r: x.r | 0,
     p: x.p | 0,
     drops: (x.drops || []).map((d) => ({ w: d.w != null ? +d.w : null, r: d.r | 0 })),
   };
+  if (x.t) s.t = x.t | 0;
+  if (x.d != null) s.d = +x.d;
+  return s;
 }
 function normSession(s) {
   return {
@@ -34,7 +40,11 @@ function normSession(s) {
     dayName: s.dayName || 'Workout',
     startedAt: +s.startedAt || Date.now(),
     finishedAt: s.finishedAt != null ? +s.finishedAt : null,
-    exercises: (s.exercises || []).map((e) => ({ id: e.id || uid(), name: String(e.name || ''), sets: (e.sets || []).map(normSet) })),
+    exercises: (s.exercises || []).map((e) => {
+      const ex = { id: e.id || uid(), name: String(e.name || ''), sets: (e.sets || []).map(normSet) };
+      if (e.kind === TIMED) ex.kind = TIMED;
+      return ex;
+    }),
   };
 }
 function normalize(d) {
@@ -48,6 +58,7 @@ function normalize(d) {
   o.sessions = (o.sessions || []).map(normSession);
   o.current = o.current ? normSession(o.current) : null;
   o.weightUnit = o.weightUnit === 'lb' ? 'lb' : 'kg';
+  o.timedExercises = [...new Set((o.timedExercises || []).map((n) => String(n).trim().toLowerCase()))];
   o.version = 1;
   return o;
 }
@@ -77,6 +88,18 @@ const findPlan = (id) => data.plans.find((p) => p.id === id);
 const findDay = (plan, id) => plan && plan.days.find((d) => d.id === id);
 const getSession = (key) => key === 'current' ? data.current : data.sessions.find((s) => s.id === key);
 const setCount = (s) => s.exercises.reduce((a, e) => a + e.sets.length, 0);
+const isTimedName = (name) => data.timedExercises.includes(String(name).trim().toLowerCase());
+const isTimedEx = (ex) => ex.kind === TIMED;
+const distUnit = () => (data.weightUnit === 'lb' ? 'mi' : 'km');
+
+/** Remembers whether an exercise is timed (plank, cardio) or strength. */
+function setTimed(name, timed) {
+  const k = String(name).trim().toLowerCase();
+  const has = data.timedExercises.includes(k);
+  if (timed && !has) data.timedExercises.push(k);
+  if (!timed && has) data.timedExercises = data.timedExercises.filter((x) => x !== k);
+}
+const newExercise = (name, timed) => (timed ? { id: uid(), name, sets: [], kind: TIMED } : { id: uid(), name, sets: [] });
 
 function moved(arr, i, delta) {
   const to = i + delta;
@@ -104,7 +127,8 @@ function createPlan(name, dayNames = []) {
 }
 const createPpl = () => createPlan('Push Pull Legs', ['Push 1', 'Pull 1', 'Legs 1', 'Push 2', 'Pull 2', 'Legs 2']);
 
-function importPlan(plan) {
+function importPlan({ plan, timed }) {
+  (timed || []).forEach((n) => setTimed(n, true));
   const taken = new Set(data.plans.map((p) => p.name.toLowerCase()));
   let name = plan.name, n = 2;
   while (taken.has(name.toLowerCase())) name = `${plan.name} (${n++})`;
@@ -131,7 +155,7 @@ function startWorkout(planId, dayId) {
     dayName: day ? day.name : 'Freestyle',
     startedAt: Date.now(),
     finishedAt: null,
-    exercises: day ? day.exercises.map((n) => ({ id: uid(), name: n, sets: [] })) : [],
+    exercises: day ? day.exercises.map((n) => newExercise(n, isTimedName(n))) : [],
   };
   commit();
 }
@@ -179,17 +203,28 @@ function lastDone(dayId) {
 // ---------------------------------------------------------------- shared plan format
 
 function planShareJson(plan) {
-  return { type: 'workout-plan', version: 1, name: plan.name, days: plan.days.map((d) => ({ name: d.name, exercises: d.exercises.slice() })) };
+  const o = { type: 'workout-plan', version: 1, name: plan.name, days: plan.days.map((d) => ({ name: d.name, exercises: d.exercises.slice() })) };
+  const seen = new Set();
+  const timed = [];
+  plan.days.forEach((d) => d.exercises.forEach((n) => {
+    if (isTimedName(n) && !seen.has(n.toLowerCase())) { seen.add(n.toLowerCase()); timed.push(n); }
+  }));
+  if (timed.length) o.timed = timed;
+  return o;
 }
+/** Returns { plan, timed } for a shared plan file, or null if it isn't one. */
 function parseSharedPlan(text) {
   try {
     const o = JSON.parse(String(text).trim());
     if (!o || o.type !== 'workout-plan') return null;
     return {
-      id: uid(),
-      name: String(o.name || '').trim() || 'Shared plan',
-      nextDayIndex: 0,
-      days: (o.days || []).map((d) => ({ id: uid(), name: String(d.name || '').trim() || 'Day', exercises: (d.exercises || []).map(String) })),
+      plan: {
+        id: uid(),
+        name: String(o.name || '').trim() || 'Shared plan',
+        nextDayIndex: 0,
+        days: (o.days || []).map((d) => ({ id: uid(), name: String(d.name || '').trim() || 'Day', exercises: (d.exercises || []).map(String) })),
+      },
+      timed: (o.timed || []).map((n) => String(n).trim().toLowerCase()),
     };
   } catch (e) {
     return null;
@@ -202,7 +237,7 @@ const setVolume = (x) => (x.w || 0) * x.r + x.drops.reduce((a, d) => a + (d.w ||
 
 function computeStats(all, from, to) {
   const ss = all.filter((s) => s.startedAt >= from && s.startedAt < to);
-  const st = { workouts: ss.length, sets: 0, reps: 0, partials: 0, dropSets: 0, volume: 0, duration: 0, byDay: [], byExercise: [] };
+  const st = { workouts: ss.length, sets: 0, reps: 0, partials: 0, dropSets: 0, volume: 0, duration: 0, byDay: [], byExercise: [], timedSeconds: 0, timedRounds: 0, distance: 0 };
   const ex = new Map();
   const days = new Map();
   for (const s of ss) {
@@ -210,10 +245,20 @@ function computeStats(all, from, to) {
     days.set(s.dayName, (days.get(s.dayName) || 0) + 1);
     for (const e of s.exercises) {
       if (!e.sets.length) continue;
-      const k = e.name.trim().toLowerCase();
-      if (!ex.has(k)) ex.set(k, { name: e.name.trim(), sets: 0, reps: 0, partials: 0, dropSets: 0, volume: 0, best: null, sessions: 0 });
+      const timed = isTimedEx(e);
+      const k = (timed ? 't:' : 's:') + e.name.trim().toLowerCase();
+      if (!ex.has(k)) ex.set(k, { name: e.name.trim(), timed, sets: 0, reps: 0, partials: 0, dropSets: 0, volume: 0, best: null, sessions: 0, seconds: 0, bestSeconds: 0, distance: 0 });
       const t = ex.get(k);
       t.sessions++;
+      if (timed) {
+        for (const x of e.sets) {
+          st.timedRounds++; t.sets++;
+          st.timedSeconds += x.t || 0; t.seconds += x.t || 0;
+          if ((x.t || 0) > t.bestSeconds) t.bestSeconds = x.t || 0;
+          if (x.d != null) { st.distance += x.d; t.distance += x.d; }
+        }
+        continue;
+      }
       for (const x of e.sets) {
         st.sets++; t.sets++;
         st.reps += x.r; t.reps += x.r;
@@ -226,7 +271,7 @@ function computeStats(all, from, to) {
     }
   }
   st.byDay = [...days.entries()].sort((a, b) => b[1] - a[1]);
-  st.byExercise = [...ex.values()].sort((a, b) => b.sets - a.sets);
+  st.byExercise = [...ex.values()].sort((a, b) => (a.timed - b.timed) || (b.sets - a.sets));
   return st;
 }
 
@@ -267,6 +312,16 @@ function setSummary(x) {
   x.drops.forEach((d) => { s += ' ↓' + (d.w != null ? `${fmtNum(d.w)}×${d.r}` : d.r); });
   return s;
 }
+/** 90 -> "1:30", 3725 -> "1:02:05" */
+function fmtClock(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+const timedText = (x) => fmtClock(x.t) + (x.d != null ? ` · ${fmtNum(x.d)} ${distUnit()}` : '');
+const summaryFor = (ex, x) => isTimedEx(ex) ? fmtClock(x.t) + (x.d != null ? `/${fmtNum(x.d)}${distUnit()}` : '') : setSummary(x);
+
 function fmtDur(ms) {
   const m = Math.max(0, Math.floor(ms / 60000));
   return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
@@ -446,17 +501,21 @@ function exerciseCard(s, key, ex, day) {
   const last = lastPerformance(ex.name, s.startedAt);
   const inTpl = !day || day.exercises.some((n) => n.toLowerCase() === ex.name.toLowerCase());
   const a = { s: key, ex: ex.id };
+  const timed = isTimedEx(ex);
   return `<section class="card">
-    <div class="ex-head"><div class="title grow">${esc(ex.name)}</div>${inTpl ? '' : pill('extra', 'tert')}
+    <div class="ex-head"><div class="title grow">${esc(ex.name)}</div>${timed ? pill('⏱ timed', 'sec') : ''}${inTpl ? '' : pill('today only', 'tert')}
       <button class="icon-btn" data-a="exMenu"${attrs(a)} aria-label="More">${icon('more')}</button></div>
-    ${last ? `<div class="small muted" style="margin-bottom:4px">Last time: ${esc(last.sets.map(setSummary).join(',  '))}</div>` : ''}
-    ${ex.sets.map((x, i) => `<button class="set-row" data-a="editSet"${attrs({ ...a, i })}>
+    ${last ? `<div class="small muted" style="margin-bottom:4px">Last time: ${esc(last.sets.map((x) => summaryFor(ex, x)).join(',  '))}</div>` : ''}
+    ${timed
+    ? ex.sets.map((x, i) => `<button class="set-row" data-a="editSet"${attrs({ ...a, i })}>
+        <div class="line"><span class="n">${i + 1}</span><span class="main">${esc(timedText(x))}</span></div></button>`).join('')
+    : ex.sets.map((x, i) => `<button class="set-row" data-a="editSet"${attrs({ ...a, i })}>
         <div class="line"><span class="n">${i + 1}</span><span class="main">${esc(setMain(x))}</span>
         ${x.p > 0 ? pill(`+${x.p} partial`, 'tert') : ''}${x.drops.length ? pill(x.drops.length === 1 ? 'drop set' : `${x.drops.length}× drop`, 'sec') : ''}</div>
         ${x.drops.length ? `<div class="drops">${esc(x.drops.map((d) => '↓ ' + dropText(d)).join('   '))}</div>` : ''}
       </button>`).join('')}
     <div class="ex-actions">
-      <button class="btn tonal" data-a="addSet"${attrs(a)}>${icon('add')} Add set</button>
+      <button class="btn tonal" data-a="addSet"${attrs(a)}>${icon('add')} ${timed ? 'Add round' : 'Add set'}</button>
       ${ex.sets.length ? `<button class="btn text" data-a="repeatSet"${attrs(a)}>Repeat last</button>` : ''}
     </div>
   </section>`;
@@ -476,6 +535,7 @@ function renderHistory() {
     list.forEach((s) => {
       const meta = [s.planName, `${s.exercises.length} exercises`, `${setCount(s)} sets`, s.finishedAt ? fmtDur(s.finishedAt - s.startedAt) : ''].filter(Boolean).join(' · ');
       const names = s.exercises.map((e) => {
+        if (isTimedEx(e)) return `${e.name} ${fmtClock(e.sets.reduce((a, x) => a + (x.t || 0), 0))}`;
         const best = e.sets.reduce((m, x) => (x.w != null && (m == null || x.w > m) ? x.w : m), null);
         return e.name + (best != null ? ` ${fmtNum(best)}${unit()}` : '');
       }).join(' · ');
@@ -504,8 +564,9 @@ function renderStats() {
     ['Workouts', st.workouts], ['Time trained', fmtDur(st.duration)],
     ['Sets', st.sets], ['Reps', st.reps],
     ['Partial reps', st.partials], ['Drop sets', st.dropSets],
-    [`Volume (${u})`, fmtVol(st.volume)], ['Exercises', st.byExercise.length],
+    [`Volume (${u})`, fmtVol(st.volume)], ['Cardio / timed', fmtClock(st.timedSeconds)],
   ];
+  if (st.distance > 0) tiles.push([`Distance (${distUnit()})`, fmtNum(st.distance)]);
   h += `<div class="tiles">${tiles.map(([l, v]) => `<div class="card tile"><div class="v">${esc(v)}</div><div class="l">${esc(l)}</div></div>`).join('')}</div>`;
   if (!st.workouts) h += `<p class="muted">No workouts this ${word}.</p>`;
   if (st.byDay.length) {
@@ -514,6 +575,12 @@ function renderStats() {
   if (st.byExercise.length) {
     h += section('Exercises');
     st.byExercise.forEach((e) => {
+      if (e.timed) {
+        const tp = [`${e.sets} rounds`, `${fmtClock(e.seconds)} total`, e.distance > 0 ? `${fmtNum(e.distance)} ${distUnit()}` : '', e.sessions > 1 ? `${e.sessions} workouts` : ''].filter(Boolean);
+        h += `<section class="card"><div class="row"><b class="grow">⏱ ${esc(e.name)}</b><span class="small"><b>best ${fmtClock(e.bestSeconds)}</b></span></div>
+          <div class="small muted">${esc(tp.join(' · '))}</div></section>`;
+        return;
+      }
       const parts = [`${e.sets} sets`, `${e.reps} reps`,
         e.partials ? `${e.partials} partials` : '', e.dropSets ? `${e.dropSets} drop sets` : '',
         e.volume > 0 ? `${fmtVol(e.volume)} ${u} volume` : '', e.sessions > 1 ? `${e.sessions} workouts` : ''].filter(Boolean);
@@ -581,7 +648,7 @@ function renderPlanEditor(id) {
         <button class="icon-btn" data-a="dayMenu"${attrs(a)} aria-label="More">${icon('more')}</button>
       </div>
       ${d.exercises.length ? '' : '<p class="small muted">No saved exercises. Add some here, or add them during a workout.</p>'}
-      ${d.exercises.map((n, j) => `<div class="tpl-row"><span class="grow">${esc(n)}</span>
+      ${d.exercises.map((n, j) => `<div class="tpl-row"><span class="grow">${isTimedName(n) ? '⏱ ' : ''}${esc(n)}</span>
         <button class="icon-btn sm" data-a="tplMove" data-d="-1"${attrs({ ...a, j })} ${j > 0 ? '' : 'disabled'} aria-label="Move up">${icon('up')}</button>
         <button class="icon-btn sm" data-a="tplMove" data-d="1"${attrs({ ...a, j })} ${j < d.exercises.length - 1 ? '' : 'disabled'} aria-label="Move down">${icon('down')}</button>
         <button class="icon-btn sm" data-a="tplRemove"${attrs({ ...a, j })} aria-label="Remove">${icon('close')}</button></div>`).join('')}
@@ -604,8 +671,10 @@ function openModal(html, handlers = {}, onMount) {
 function closeModal() {
   const root = $('#modal-root');
   const was = !!root.firstChild;
+  const onClose = modalHandlers.__onClose;
   root.innerHTML = '';
   modalHandlers = {};
+  if (onClose) onClose();
   return was;
 }
 
@@ -635,24 +704,45 @@ function actionSheet(title, items) {
   { pick(el) { const it = items[+el.dataset.i]; closeModal(); it.fn(); } });
 }
 
+/** onAdd(name, saveToPlan, timed). Strength defaults to saving to the day; timed/cardio defaults to "today only". */
 function addExerciseDialog(suggestions, saveLabel, onAdd) {
+  let timed = false;
   openModal(`<h3>Add exercise</h3>
     <div class="field"><input id="ex-name" type="text" autocomplete="off" autocapitalize="words" placeholder="Exercise name"></div>
+    <div class="chips" style="margin-bottom:6px">
+      <button class="chip on" id="k-s" data-a="m:kind" data-k="s">Weights × reps</button>
+      <button class="chip" id="k-t" data-a="m:kind" data-k="t">Time / cardio</button>
+    </div>
     ${saveLabel ? `<label class="check"><input id="ex-save" type="checkbox" checked> ${esc(saveLabel)}</label>` : ''}
     <div id="sugg"></div>
     <div class="dialog-actions"><span class="grow"></span><button class="btn text" data-a="m:close">Cancel</button><button class="btn text" data-a="m:add">Add</button></div>`,
   {
-    pick(el) { done(el.dataset.n); },
-    add() { const v = $('#ex-name').value.trim(); if (v) done(v); },
+    kind(el) { choose(el.dataset.k === 't'); },
+    pick(el) {
+      const n = el.dataset.n;
+      const t = isTimedName(n);
+      const save = saveLabel ? (t === timed ? $('#ex-save').checked : !t) : false;
+      closeModal();
+      onAdd(n, save, t);
+    },
+    add() {
+      const v = $('#ex-name').value.trim();
+      if (!v) return;
+      const save = saveLabel ? $('#ex-save').checked : false;
+      closeModal();
+      onAdd(v, save, timed);
+    },
   },
   () => {
     const inp = $('#ex-name');
     const draw = () => {
       const q = inp.value.trim().toLowerCase();
+      const known = suggestions.find((n) => n.toLowerCase() === q);
+      if (known) choose(isTimedName(known));
       const list = (q ? suggestions.filter((n) => n.toLowerCase().includes(q)) : suggestions).slice(0, 10);
       $('#sugg').innerHTML = list.length
         ? `<div class="field-label" style="margin-top:6px">${q ? 'Matches' : 'Your exercises'}</div>` +
-          list.map((n) => `<button class="sugg" data-a="m:pick" data-n="${esc(n)}">${esc(n)}</button>`).join('')
+          list.map((n) => `<button class="sugg" data-a="m:pick" data-n="${esc(n)}">${isTimedName(n) ? '⏱ ' : ''}${esc(n)}</button>`).join('')
         : '';
     };
     inp.addEventListener('input', draw);
@@ -660,11 +750,78 @@ function addExerciseDialog(suggestions, saveLabel, onAdd) {
     draw();
     setTimeout(() => inp.focus(), 50);
   });
-  function done(name) {
-    const save = saveLabel ? $('#ex-save').checked : false;
-    closeModal();
-    onAdd(name, save);
+  function choose(t) {
+    if (t === timed) return;
+    timed = t;
+    $('#k-s').classList.toggle('on', !t);
+    $('#k-t').classList.toggle('on', t);
+    const cb = $('#ex-save');
+    if (cb) cb.checked = !t;
   }
+}
+
+/** One round of a timed exercise: duration (with a stopwatch) and optional distance. */
+function timedDialog(s, ex, idx) {
+  const isEdit = idx != null && idx >= 0 && idx < ex.sets.length;
+  const init = isEdit ? ex.sets[idx] : { t: 0, d: null };
+  let timer = null;
+  const total = () => (parseInt($('#f-min').value, 10) || 0) * 60 + (parseInt($('#f-sec').value, 10) || 0);
+  const showClock = () => { $('#clock').textContent = fmtClock(total()); };
+  const stop = () => {
+    if (timer) clearInterval(timer);
+    timer = null;
+    const b = $('#f-timer');
+    if (b) { b.textContent = total() > 0 ? 'Continue timer' : 'Start timer'; b.classList.remove('danger-bg'); }
+  };
+  openModal(`<h3>${esc(ex.name)} · round ${isEdit ? idx + 1 : ex.sets.length + 1}</h3>
+    <div id="clock" style="font-size:44px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums;margin:4px 0 10px">${fmtClock(init.t)}</div>
+    <button class="btn primary block" id="f-timer" data-a="m:timer" style="margin-bottom:14px">${init.t ? 'Continue timer' : 'Start timer'}</button>
+    ${stepper('Minutes', 'f-min', init.t ? Math.floor(init.t / 60) : '', 1, false)}
+    ${stepper('Seconds', 'f-sec', init.t ? init.t % 60 : '', 15, false)}
+    ${stepper('Distance (optional)', 'f-dist', init.d != null ? fmtNum(init.d) : '', 0.5, true, distUnit())}
+    <div class="dialog-actions">
+      ${isEdit ? '<button class="btn text danger" data-a="m:delete">Delete</button>' : ''}
+      <span class="grow"></span>
+      <button class="btn text" data-a="m:cancel">Cancel</button>
+      <button class="btn primary" data-a="m:save">Save</button>
+    </div>`,
+  {
+    timer() {
+      if (timer) { stop(); return; }
+      const base = total();
+      const start = Date.now();
+      const b = $('#f-timer');
+      b.textContent = 'Stop timer';
+      b.classList.add('danger-bg');
+      timer = setInterval(() => {
+        if (!$('#f-min')) { stop(); return; }
+        const t = base + Math.floor((Date.now() - start) / 1000);
+        $('#f-min').value = Math.floor(t / 60);
+        $('#f-sec').value = t % 60;
+        showClock();
+      }, 200);
+    },
+    cancel() { stop(); closeModal(); },
+    save() {
+      stop();
+      const t = total();
+      if (t <= 0) { toast('Enter a time or use the timer'); return; }
+      const set = { id: isEdit ? ex.sets[idx].id : uid(), w: null, r: 0, p: 0, drops: [], t };
+      const d = parseNum($('#f-dist').value);
+      if (d != null) set.d = d;
+      if (isEdit) ex.sets[idx] = set; else ex.sets.push(set);
+      closeModal();
+      commit();
+    },
+    delete() { stop(); ex.sets.splice(idx, 1); closeModal(); commit(); },
+  },
+  () => {
+    ['#f-min', '#f-sec'].forEach((id) => $(id).addEventListener('input', showClock));
+    $$('[data-t="f-min"],[data-t="f-sec"]').forEach((b) => b.addEventListener('click', () => setTimeout(showClock)));
+  });
+  // Closing the dialog any other way must stop the stopwatch too.
+  const prevClose = modalHandlers;
+  prevClose.__onClose = stop;
 }
 
 function stepper(label, id, value, step, dec, u = '') {
@@ -685,6 +842,7 @@ function setDialog(key, exId, idx) {
   const s = getSession(key);
   const ex = s && s.exercises.find((e) => e.id === exId);
   if (!ex) return;
+  if (isTimedEx(ex)) { timedDialog(s, ex, idx); return; }
   const isEdit = idx != null && idx >= 0 && idx < ex.sets.length;
   let init;
   if (isEdit) init = ex.sets[idx];
@@ -735,7 +893,8 @@ function setDialog(key, exId, idx) {
 }
 
 function importPlanDialog(text) {
-  const plan = parseSharedPlan(text);
+  const shared = parseSharedPlan(text);
+  const plan = shared && shared.plan;
   if (!plan) {
     openModal(`<h3>Not a plan file</h3><p class="muted">This file isn't a shared Workout plan. (Full backups are restored from Plans → Settings → Import backup.)</p>
       <div class="dialog-actions"><span class="grow"></span><button class="btn text" data-a="m:close">OK</button></div>`);
@@ -748,7 +907,7 @@ function importPlanDialog(text) {
   {
     ok() {
       closeModal();
-      const id = importPlan(plan);
+      const id = importPlan(shared);
       ui.tab = 'plans';
       openSub({ type: 'plan', id });
     },
@@ -871,7 +1030,7 @@ const actions = {
     const p = findPlan(d.plan);
     const day = findDay(p, d.day);
     const sugg = library().filter((n) => !day.exercises.some((x) => x.toLowerCase() === n.toLowerCase()));
-    addExerciseDialog(sugg, null, (name) => { addTemplateExercise(p, day, name); commit(); });
+    addExerciseDialog(sugg, null, (name, _save, timed) => { setTimed(name, timed); addTemplateExercise(p, day, name); commit(); });
   },
 
   // workouts
@@ -896,8 +1055,9 @@ const actions = {
     const p = findPlan(s.planId);
     const day = findDay(p, s.dayId);
     const sugg = library().filter((n) => !s.exercises.some((e) => e.name.toLowerCase() === n.toLowerCase()));
-    addExerciseDialog(sugg, day ? `Also save to ${day.name} for next time` : null, (name, saveTo) => {
-      s.exercises.push({ id: uid(), name, sets: [] });
+    addExerciseDialog(sugg, day ? `Also add to ${day.name} plan for next time` : null, (name, saveTo, timed) => {
+      s.exercises.push(newExercise(name, timed));
+      setTimed(name, timed);
       if (saveTo && day) addTemplateExercise(p, day, name);
       commit();
     });
@@ -908,7 +1068,7 @@ const actions = {
     const day = findDay(p, s.dayId);
     const items = [];
     if (day && !day.exercises.some((n) => n.toLowerCase() === ex.name.toLowerCase())) {
-      items.push({ label: `Save to ${day.name}`, fn: () => { addTemplateExercise(p, day, ex.name); commit(); toast(`Saved to ${day.name}`); } });
+      items.push({ label: `Add to ${day.name} plan`, fn: () => { addTemplateExercise(p, day, ex.name); commit(); toast(`Added to ${day.name}`); } });
     }
     const remove = () => { s.exercises = s.exercises.filter((e) => e.id !== ex.id); commit(); };
     items.push({
@@ -924,7 +1084,7 @@ const actions = {
   repeatSet(d) {
     const { ex } = exerciseOf(d);
     const last = ex.sets[ex.sets.length - 1];
-    ex.sets.push({ ...last, id: uid(), drops: last.drops.map((x) => ({ ...x })) });
+    ex.sets.push({ ...last, id: uid(), drops: (last.drops || []).map((x) => ({ ...x })) });
     commit();
   },
   step(d) {

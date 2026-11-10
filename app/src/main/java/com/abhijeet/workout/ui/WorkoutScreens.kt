@@ -24,6 +24,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.abhijeet.workout.data.ExerciseLog
+import com.abhijeet.workout.data.KIND_STRENGTH
+import com.abhijeet.workout.data.KIND_TIMED
 import com.abhijeet.workout.data.SetLog
 import com.abhijeet.workout.data.Session
 import com.abhijeet.workout.data.WorkoutViewModel
@@ -318,6 +320,7 @@ private fun SessionEditor(
                 ex = ex,
                 last = vm.lastPerformance(ex.name, session.startedAt),
                 unit = unit,
+                distUnit = vm.data.distanceUnit,
                 inTemplate = day == null || ex.name.lowercase() in template,
                 dayName = day?.name,
                 onChange = { n -> onChange(session.copy(exercises = session.exercises.map { if (it.id == n.id) n else it })) },
@@ -338,11 +341,13 @@ private fun SessionEditor(
     if (adding) {
         AddExerciseDialog(
             suggestions = vm.exerciseLibrary().filter { n -> session.exercises.none { it.name.equals(n, ignoreCase = true) } },
-            saveLabel = day?.let { "Also save to ${it.name} for next time" },
+            isTimed = { vm.data.isTimed(it) },
+            saveLabel = day?.let { "Also add to ${it.name} plan for next time" },
             onDismiss = { adding = false },
-            onAdd = { name, save ->
+            onAdd = { name, save, timed ->
                 adding = false
-                onChange(session.copy(exercises = session.exercises + ExerciseLog(name = name)))
+                onChange(session.copy(exercises = session.exercises + ExerciseLog(name = name, kind = if (timed) KIND_TIMED else KIND_STRENGTH)))
+                vm.setTimed(name, timed)
                 if (save && plan != null && day != null) vm.addTemplateExercise(plan.id, day.id, name)
             },
         )
@@ -354,6 +359,7 @@ private fun ExerciseCard(
     ex: ExerciseLog,
     last: ExerciseLog?,
     unit: String,
+    distUnit: String,
     inTemplate: Boolean,
     dayName: String?,
     onChange: (ExerciseLog) -> Unit,
@@ -369,14 +375,18 @@ private fun ExerciseCard(
         Column(Modifier.padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(ex.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                if (ex.isTimed) {
+                    Pill("⏱ timed", MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer)
+                    Spacer(Modifier.width(4.dp))
+                }
                 if (!inTemplate) {
-                    Pill("extra", MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer)
+                    Pill("today only", MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer)
                 }
                 Box {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         if (!inTemplate && dayName != null) {
-                            DropdownMenuItem(text = { Text("Save to $dayName") }, onClick = { menu = false; onSaveToPlan() })
+                            DropdownMenuItem(text = { Text("Add to $dayName plan") }, onClick = { menu = false; onSaveToPlan() })
                         }
                         DropdownMenuItem(text = { Text("Remove from this workout") }, onClick = {
                             menu = false
@@ -387,18 +397,20 @@ private fun ExerciseCard(
             }
             if (last != null) {
                 Text(
-                    "Last time: " + last.sets.joinToString(",  ") { it.summary(unit) },
+                    "Last time: " + last.sets.joinToString(",  ") { it.summaryFor(ex.isTimed, unit, distUnit) },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(end = 12.dp, bottom = 4.dp),
                 )
             }
-            ex.sets.forEachIndexed { i, s -> SetRow(i, s, unit) { editing = i } }
+            ex.sets.forEachIndexed { i, s ->
+                if (ex.isTimed) TimedRow(i, s, distUnit) { editing = i } else SetRow(i, s, unit) { editing = i }
+            }
             Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 FilledTonalButton(onClick = { editing = -1 }) {
                     Icon(Icons.Filled.Add, null)
                     Spacer(Modifier.width(4.dp))
-                    Text("Add set")
+                    Text(if (ex.isTimed) "Add round" else "Add set")
                 }
                 if (ex.sets.isNotEmpty()) {
                     Spacer(Modifier.width(8.dp))
@@ -417,20 +429,34 @@ private fun ExerciseCard(
                 ?.copy(id = newId(), partialReps = 0, drops = emptyList()) ?: SetLog()
         }
         val isEdit = idx >= 0 && idx < ex.sets.size
-        SetDialog(
-            title = "${ex.name} · set ${if (isEdit) idx + 1 else ex.sets.size + 1}",
-            initial = initial,
-            unit = unit,
-            onDismiss = { editing = null },
-            onSave = { s ->
-                editing = null
-                onChange(ex.copy(sets = if (isEdit) ex.sets.toMutableList().also { it[idx] = s } else ex.sets + s))
-            },
-            onDelete = if (isEdit) ({
-                editing = null
-                onChange(ex.copy(sets = ex.sets.filterIndexed { j, _ -> j != idx }))
-            }) else null,
-        )
+        val save: (SetLog) -> Unit = { s ->
+            editing = null
+            onChange(ex.copy(sets = if (isEdit) ex.sets.toMutableList().also { it[idx] = s } else ex.sets + s))
+        }
+        val delete: (() -> Unit)? = if (isEdit) ({
+            editing = null
+            onChange(ex.copy(sets = ex.sets.filterIndexed { j, _ -> j != idx }))
+        }) else null
+        if (ex.isTimed) {
+            TimedSetDialog(
+                title = "${ex.name} · round ${if (isEdit) idx + 1 else ex.sets.size + 1}",
+                // New rounds start at zero so the stopwatch can be used straight away.
+                initial = if (isEdit) initial else SetLog(),
+                distUnit = distUnit,
+                onDismiss = { editing = null },
+                onSave = save,
+                onDelete = delete,
+            )
+        } else {
+            SetDialog(
+                title = "${ex.name} · set ${if (isEdit) idx + 1 else ex.sets.size + 1}",
+                initial = initial,
+                unit = unit,
+                onDismiss = { editing = null },
+                onSave = save,
+                onDelete = delete,
+            )
+        }
     }
 
     if (confirmRemove) {
@@ -442,6 +468,27 @@ private fun ExerciseCard(
             onDismiss = { confirmRemove = false },
             onConfirm = { confirmRemove = false; onRemove() },
         )
+    }
+}
+
+@Composable
+private fun TimedRow(index: Int, s: SetLog, distUnit: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(end = 12.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "${index + 1}",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(28.dp),
+        )
+        Text(s.timedText(distUnit), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
     }
 }
 

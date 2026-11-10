@@ -6,7 +6,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.TemporalAdjusters
 
-class ExerciseStat(val name: String) {
+class ExerciseStat(val name: String, val timed: Boolean) {
     var sets = 0
     var reps = 0
     var partials = 0
@@ -14,6 +14,10 @@ class ExerciseStat(val name: String) {
     var volume = 0.0
     var best: Double? = null
     var sessions = 0
+    // timed exercises
+    var seconds = 0L
+    var bestSeconds = 0
+    var distance = 0.0
 }
 
 data class PeriodStats(
@@ -26,6 +30,10 @@ data class PeriodStats(
     val durationMs: Long,
     val byDay: List<Pair<String, Int>>,
     val byExercise: List<ExerciseStat>,
+    /** Timed / cardio work. */
+    val timedSeconds: Long,
+    val timedRounds: Int,
+    val distance: Double,
 )
 
 fun computeStats(all: List<Session>, from: Long, to: Long): PeriodStats {
@@ -36,13 +44,26 @@ fun computeStats(all: List<Session>, from: Long, to: Long): PeriodStats {
     var drops = 0
     var volume = 0.0
     var duration = 0L
+    var timedSeconds = 0L
+    var timedRounds = 0
+    var distance = 0.0
     val ex = LinkedHashMap<String, ExerciseStat>()
     for (s in ss) {
         s.finishedAt?.let { duration += (it - s.startedAt).coerceAtLeast(0) }
         for (e in s.exercises) {
             if (e.sets.isEmpty()) continue
-            val st = ex.getOrPut(e.name.trim().lowercase()) { ExerciseStat(e.name.trim()) }
+            val key = (if (e.isTimed) "t:" else "s:") + e.name.trim().lowercase()
+            val st = ex.getOrPut(key) { ExerciseStat(e.name.trim(), e.isTimed) }
             st.sessions++
+            if (e.isTimed) {
+                for (set in e.sets) {
+                    timedRounds++; st.sets++
+                    timedSeconds += set.seconds; st.seconds += set.seconds
+                    if (set.seconds > st.bestSeconds) st.bestSeconds = set.seconds
+                    set.distance?.let { distance += it; st.distance += it }
+                }
+                continue
+            }
             for (set in e.sets) {
                 sets++; st.sets++
                 reps += set.reps; st.reps += set.reps
@@ -66,7 +87,10 @@ fun computeStats(all: List<Session>, from: Long, to: Long): PeriodStats {
         volume = volume,
         durationMs = duration,
         byDay = ss.groupingBy { it.dayName }.eachCount().toList().sortedByDescending { it.second },
-        byExercise = ex.values.sortedByDescending { it.sets },
+        byExercise = ex.values.sortedWith(compareBy<ExerciseStat> { it.timed }.thenByDescending { it.sets }),
+        timedSeconds = timedSeconds,
+        timedRounds = timedRounds,
+        distance = distance,
     )
 }
 

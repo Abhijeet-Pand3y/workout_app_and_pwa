@@ -71,6 +71,22 @@ fun SetLog.summary(unit: String): String = buildString {
     }
 }
 
+/** 90 -> "1:30", 3725 -> "1:02:05" */
+fun fmtClock(totalSeconds: Long): String {
+    val s = totalSeconds.coerceAtLeast(0)
+    val h = s / 3600
+    val m = (s % 3600) / 60
+    val sec = s % 60
+    return if (h > 0) String.format(Locale.US, "%d:%02d:%02d", h, m, sec)
+    else String.format(Locale.US, "%d:%02d", m, sec)
+}
+
+fun SetLog.timedText(distUnit: String): String =
+    fmtClock(seconds.toLong()) + (distance?.let { " · ${fmtNum(it)} $distUnit" } ?: "")
+
+fun SetLog.summaryFor(timed: Boolean, unit: String, distUnit: String): String =
+    if (timed) fmtClock(seconds.toLong()) + (distance?.let { "/${fmtNum(it)}$distUnit" } ?: "") else summary(unit)
+
 fun fmtDuration(ms: Long): String {
     val m = (ms / 60_000).coerceAtLeast(0)
     return if (m < 60) "${m}m" else "${m / 60}h ${String.format(Locale.US, "%02d", m % 60)}m"
@@ -207,12 +223,16 @@ fun ConfirmDialog(
 @Composable
 fun AddExerciseDialog(
     suggestions: List<String>,
+    isTimed: (String) -> Boolean,
     saveLabel: String?,
     onDismiss: () -> Unit,
-    onAdd: (name: String, saveToPlan: Boolean) -> Unit,
+    onAdd: (name: String, saveToPlan: Boolean, timed: Boolean) -> Unit,
 ) {
     var text by remember { mutableStateOf("") }
+    var timed by remember { mutableStateOf(false) }
+    // Strength exercises default to being saved to the day; timed/cardio default to "just today".
     var save by remember { mutableStateOf(true) }
+    fun chooseKind(t: Boolean) { if (t != timed) { timed = t; save = !t } }
     val q = text.trim()
     val filtered = remember(q, suggestions) {
         (if (q.isEmpty()) suggestions else suggestions.filter { it.contains(q, ignoreCase = true) }).take(10)
@@ -227,12 +247,20 @@ fun AddExerciseDialog(
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 OutlinedTextField(
                     value = text,
-                    onValueChange = { text = it },
+                    onValueChange = { v ->
+                        text = v
+                        // Known exercise: switch to the type it was logged as before.
+                        suggestions.firstOrNull { it.equals(v.trim(), ignoreCase = true) }?.let { chooseKind(isTimed(it)) }
+                    },
                     label = { Text("Exercise name") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
                     modifier = Modifier.fillMaxWidth().focusRequester(focus),
                 )
+                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = !timed, onClick = { chooseKind(false) }, label = { Text("Weights × reps") })
+                    FilterChip(selected = timed, onClick = { chooseKind(true) }, label = { Text("Time / cardio") })
+                }
                 if (saveLabel != null) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -250,17 +278,86 @@ fun AddExerciseDialog(
                         modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
                     )
                     filtered.forEach { s ->
+                        val t = isTimed(s)
                         Text(
-                            s,
+                            if (t) "⏱ $s" else s,
                             style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier.fillMaxWidth().clickable { onAdd(s, save) }.padding(vertical = 10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                                .clickable { onAdd(s, if (t == timed) save else !t, t) }
+                                .padding(vertical = 10.dp),
                         )
                     }
                 }
             }
         },
-        confirmButton = { TextButton(enabled = q.isNotEmpty(), onClick = { onAdd(q, save) }) { Text("Add") } },
+        confirmButton = { TextButton(enabled = q.isNotEmpty(), onClick = { onAdd(q, save, timed) }) { Text("Add") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** One round of a timed exercise (plank, treadmill…): duration with a stopwatch, optional distance. */
+@Composable
+fun TimedSetDialog(
+    title: String,
+    initial: SetLog,
+    distUnit: String,
+    onDismiss: () -> Unit,
+    onSave: (SetLog) -> Unit,
+    onDelete: (() -> Unit)?,
+) {
+    var minutes by remember { mutableStateOf(if (initial.seconds > 0) (initial.seconds / 60).toString() else "") }
+    var seconds by remember { mutableStateOf(if (initial.seconds > 0) (initial.seconds % 60).toString() else "") }
+    var distance by remember { mutableStateOf(initial.distance?.let { fmtNum(it) } ?: "") }
+    var running by remember { mutableStateOf(false) }
+    fun total(): Int = (minutes.toIntOrNull() ?: 0) * 60 + (seconds.toIntOrNull() ?: 0)
+
+    LaunchedEffect(running) {
+        if (running) {
+            val base = total()
+            val start = System.currentTimeMillis()
+            while (running) {
+                val t = base + ((System.currentTimeMillis() - start) / 1000).toInt()
+                minutes = (t / 60).toString()
+                seconds = (t % 60).toString()
+                delay(200)
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!running) onDismiss() },
+        title = { Text(title) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    fmtClock(total().toLong()),
+                    style = MaterialTheme.typography.displaySmall,
+                    modifier = Modifier.fillMaxWidth().wrapContentWidth(Alignment.CenterHorizontally),
+                )
+                Button(
+                    onClick = { running = !running },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = if (running) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error) else ButtonDefaults.buttonColors(),
+                ) { Text(if (running) "Stop timer" else if (total() > 0) "Continue timer" else "Start timer") }
+                NumberField("Minutes", minutes, { minutes = it }, step = 1.0, decimal = false)
+                NumberField("Seconds", seconds, { seconds = it }, step = 15.0, decimal = false)
+                NumberField("Distance (optional)", distance, { distance = it }, step = 0.5, decimal = true, unit = distUnit)
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = total() > 0, onClick = {
+                running = false
+                onSave(initial.copy(seconds = total(), distance = distance.toDoubleOrNull(), weight = null, reps = 0, partialReps = 0, drops = emptyList()))
+            }) { Text("Save") }
+        },
+        dismissButton = {
+            Row {
+                if (onDelete != null) {
+                    TextButton(onClick = { running = false; onDelete() }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                }
+                TextButton(onClick = { running = false; onDismiss() }) { Text("Cancel") }
+            }
+        },
     )
 }
 

@@ -218,7 +218,7 @@ fun PlanEditorScreen(vm: WorkoutViewModel, planId: String, onBack: () -> Unit) {
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 title = { Text(plan.name) },
                 actions = {
-                    IconButton(onClick = { sharePlan(ctx, plan) }) { Icon(Icons.Filled.Share, "Share plan") }
+                    IconButton(onClick = { sharePlan(ctx, plan, vm.sharePlanJson(plan)) }) { Icon(Icons.Filled.Share, "Share plan") }
                     IconButton(onClick = { renamePlan = true }) { Icon(Icons.Filled.Edit, "Rename plan") }
                     IconButton(onClick = { deletePlan = true }) { Icon(Icons.Filled.Delete, "Delete plan") }
                 },
@@ -305,9 +305,14 @@ fun PlanEditorScreen(vm: WorkoutViewModel, planId: String, onBack: () -> Unit) {
     addExTo?.let { day ->
         AddExerciseDialog(
             suggestions = vm.exerciseLibrary().filter { n -> day.exercises.none { it.equals(n, ignoreCase = true) } },
+            isTimed = { vm.data.isTimed(it) },
             saveLabel = null,
             onDismiss = { addExTo = null },
-            onAdd = { name, _ -> addExTo = null; vm.addTemplateExercise(plan.id, day.id, name) },
+            onAdd = { name, _, timed ->
+                addExTo = null
+                vm.setTimed(name, timed)
+                vm.addTemplateExercise(plan.id, day.id, name)
+            },
         )
     }
 }
@@ -360,7 +365,11 @@ private fun DayCard(
             }
             day.exercises.forEachIndexed { j, name ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(name, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f).padding(start = 20.dp))
+                    Text(
+                        if (vm.data.isTimed(name)) "⏱ $name" else name,
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.weight(1f).padding(start = 20.dp),
+                    )
                     IconButton(onClick = { vm.moveTemplateExercise(plan.id, day.id, j, -1) }, enabled = j > 0, modifier = Modifier.size(36.dp)) {
                         Icon(Icons.Filled.KeyboardArrowUp, "Move up")
                     }

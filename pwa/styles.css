@@ -120,6 +120,7 @@ h3 { font-size: 18px; margin: 0 0 12px; }
 .btn.tonal { background: var(--primary-soft); color: var(--on-primary-soft); }
 .btn.text { color: var(--primary); padding: 0 12px; }
 .btn.danger { color: var(--danger); }
+.btn.danger-bg { background: var(--danger); color: #fff; }
 .btn:disabled { opacity: .4; }
 .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: 20px; border: 0; background: none; color: var(--muted); flex: none; }
 .icon-btn:active, .btn:active { filter: brightness(.95); }

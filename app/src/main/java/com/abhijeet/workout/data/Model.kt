@@ -26,6 +26,10 @@ data class Plan(
 
 data class Drop(val weight: Double? = null, val reps: Int = 0)
 
+/** Exercise types. Strength = weight × reps; timed = duration (+ optional distance), e.g. plank or cardio. */
+const val KIND_STRENGTH = "strength"
+const val KIND_TIMED = "timed"
+
 data class SetLog(
     val id: String = newId(),
     val weight: Double? = null,
@@ -33,6 +37,9 @@ data class SetLog(
     val partialReps: Int = 0,
     /** Drop sets done right after this set (supports double/triple drops). */
     val drops: List<Drop> = emptyList(),
+    /** Timed exercises only: duration in seconds and optional distance (km or mi). */
+    val seconds: Int = 0,
+    val distance: Double? = null,
 ) {
     fun volume(): Double =
         (weight ?: 0.0) * reps + drops.sumOf { (it.weight ?: 0.0) * it.reps }
@@ -42,7 +49,10 @@ data class ExerciseLog(
     val id: String = newId(),
     val name: String,
     val sets: List<SetLog> = emptyList(),
-)
+    val kind: String = KIND_STRENGTH,
+) {
+    val isTimed: Boolean get() = kind == KIND_TIMED
+}
 
 data class Session(
     val id: String = newId(),
@@ -65,7 +75,15 @@ data class AppData(
     /** Workout in progress, if any. */
     val current: Session? = null,
     val weightUnit: String = "kg",
-)
+    /** Lower-cased names of exercises that are timed (plank, treadmill…). Everything else is strength. */
+    val timedExercises: Set<String> = emptySet(),
+) {
+    fun isTimed(name: String): Boolean = name.trim().lowercase() in timedExercises
+    val distanceUnit: String get() = if (weightUnit == "lb") "mi" else "km"
+}
+
+/** A plan received from someone, plus which of its exercises are timed. */
+data class SharedPlan(val plan: Plan, val timed: Set<String>)
 
 fun <T> List<T>.moved(index: Int, delta: Int): List<T> {
     val to = index + delta
@@ -106,6 +124,8 @@ private fun SetLog.toJson() = JSONObject().apply {
     put("r", reps)
     put("p", partialReps)
     put("drops", drops.toJsonArray { it.toJson() })
+    if (seconds > 0) put("t", seconds)
+    distance?.let { put("d", it) }
 }
 
 private fun parseSet(o: JSONObject) = SetLog(
@@ -114,11 +134,14 @@ private fun parseSet(o: JSONObject) = SetLog(
     reps = o.optInt("r"),
     partialReps = o.optInt("p"),
     drops = o.objects("drops", ::parseDrop),
+    seconds = o.optInt("t"),
+    distance = o.doubleOrNull("d"),
 )
 
 private fun ExerciseLog.toJson() = JSONObject().apply {
     put("id", id)
     put("name", name)
+    if (isTimed) put("kind", kind)
     put("sets", sets.toJsonArray { it.toJson() })
 }
 
@@ -126,6 +149,7 @@ private fun parseExercise(o: JSONObject) = ExerciseLog(
     id = o.idOrNew(),
     name = o.optString("name"),
     sets = o.objects("sets", ::parseSet),
+    kind = if (o.optString("kind") == KIND_TIMED) KIND_TIMED else KIND_STRENGTH,
 )
 
 private fun Session.toJson() = JSONObject().apply {
@@ -179,7 +203,7 @@ private fun parsePlan(o: JSONObject) = Plan(
 // ---------------------------------------------------------------- shared plan (no workout data)
 
 /** Just the plan structure (name, days, exercise lists), for sending to a friend. */
-fun Plan.toShareJson(): JSONObject = JSONObject().apply {
+fun Plan.toShareJson(timedNames: Set<String>): JSONObject = JSONObject().apply {
     put("type", "workout-plan")
     put("version", 1)
     put("name", name)
@@ -189,19 +213,24 @@ fun Plan.toShareJson(): JSONObject = JSONObject().apply {
             put("exercises", d.exercises.toJsonArray { it })
         }
     })
+    val timed = days.flatMap { it.exercises }.filter { it.trim().lowercase() in timedNames }.distinctBy { it.lowercase() }
+    if (timed.isNotEmpty()) put("timed", timed.toJsonArray { it })
 }
 
 /** Parses a shared plan into a brand-new plan (fresh ids, rotation starts at day 1). Null if not a plan file. */
-fun parseSharedPlan(text: String): Plan? = try {
+fun parseSharedPlan(text: String): SharedPlan? = try {
     val o = JSONObject(text.trim())
     if (o.optString("type") != "workout-plan") {
         null
     } else {
-        Plan(
-            name = o.optString("name").ifBlank { "Shared plan" },
-            days = o.objects("days") { d ->
-                SplitDay(name = d.optString("name").ifBlank { "Day" }, exercises = d.strings("exercises"))
-            },
+        SharedPlan(
+            plan = Plan(
+                name = o.optString("name").ifBlank { "Shared plan" },
+                days = o.objects("days") { d ->
+                    SplitDay(name = d.optString("name").ifBlank { "Day" }, exercises = d.strings("exercises"))
+                },
+            ),
+            timed = o.strings("timed").map { it.trim().lowercase() }.toSet(),
         )
     }
 } catch (e: Exception) {
@@ -215,6 +244,7 @@ fun AppData.toJson(): JSONObject = JSONObject().apply {
     put("sessions", sessions.toJsonArray { it.toJson() })
     current?.let { put("current", it.toJson()) }
     put("weightUnit", weightUnit)
+    put("timedExercises", timedExercises.toList().toJsonArray { it })
 }
 
 fun parseAppData(o: JSONObject) = AppData(
@@ -223,4 +253,5 @@ fun parseAppData(o: JSONObject) = AppData(
     sessions = o.objects("sessions", ::parseSession),
     current = o.optJSONObject("current")?.let(::parseSession),
     weightUnit = o.optString("weightUnit", "kg"),
+    timedExercises = o.strings("timedExercises").map { it.trim().lowercase() }.toSet(),
 )
